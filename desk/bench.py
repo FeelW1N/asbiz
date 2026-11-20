@@ -14,8 +14,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import datetime
+import json
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
 
 from .config import RUNS
@@ -39,6 +40,28 @@ DETAILED = (
 - другое: всё остальное; при сомнении выбирай «другое»."""
 )
 
+# Собственные примеры: не взяты из dev/test. Разбираем границу между
+# двойным списанием и возвратом за отменённую покупку.
+FEW_SHOT = DETAILED + """
+
+Пример 1.
+Обращение: «Оплатил абонемент в бассейн за 2700 рублей, а в выписке два
+одинаковых списания. Верните второе, абонемент у меня один».
+Разбор: причина обращения — двойное списание за одну покупку. Слово
+«верните» не меняет категорию: ошибки списания относятся к платежам.
+Ответ: платежи
+
+Пример 2.
+Обращение: «Я отменил доставку цветов за 1800 рублей. Магазин подтвердил
+возврат, но на карте его пока не видно. Как узнать, когда он поступит?»
+Разбор: покупка отменена, клиент уточняет статус уже оформленного возврата.
+Это не ошибка исходного платежа.
+Ответ: возвраты
+
+Классифицируй следующее обращение. Ответь только названием категории,
+без разбора и пояснений.
+"""
+
 # Рассуждение. max_tokens кандидата должен быть больше budget_tokens
 THINKING = {"thinking": {"type": "enabled", "budget_tokens": 1024}}
 
@@ -58,6 +81,7 @@ CANDIDATES = [
     Candidate("короткая постановка", SHORT),
     Candidate("постановка с правилами", DETAILED),
     Candidate("правила + рассуждение", DETAILED, body=THINKING, max_tokens=2048),
+    Candidate("правила + примеры", FEW_SHOT),
 ]
 
 
@@ -149,6 +173,9 @@ def summarize(
         "p50, с": percentile(latencies, 0.5),
         "p95, с": percentile(latencies, 0.95),
         "первый токен p50, с": percentile(ttfts, 0.5),
+        "входных на обращение": per(
+            total.input_tokens + total.cache_read_tokens + total.cache_write_tokens
+        ),
         "токенов на обращение": per(total.total_tokens),
         "взвешенных на обращение": per(total.weighted),
         "цена за 1000, у.е.": 1000 * per(total.cost),
@@ -190,7 +217,8 @@ def main() -> None:
         ]
 
     results, spent = [], 0.0
-    for cand, done in zip(chosen, asyncio.run(run_all())):
+    results_raw = asyncio.run(run_all())
+    for cand, done in zip(chosen, results_raw):
         spent += sum(r.usage.weighted for r in done)
         results.append(summarize(cand.name, done, args.flow))
     report = table(results)
@@ -205,6 +233,25 @@ def main() -> None:
     stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     (RUNS / "s1_bench.md").write_text(
         "# Замер кандидатов, %s\n\n%s\n%s\n" % (stamp, report, footer), encoding="utf-8"
+    )
+    # Сохраняем точные значения и строки замера для проверки расчётов в отчёте.
+    (RUNS / "s1_bench.json").write_text(
+        json.dumps(
+            {
+                "timestamp": stamp,
+                "model": llm.cfg.model,
+                "n": len(rows),
+                "flow_per_day": args.flow,
+                "summary": results,
+                "rows": {
+                    cand.name: [asdict(row) for row in done]
+                    for cand, done in zip(chosen, results_raw)
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
     )
 
 
