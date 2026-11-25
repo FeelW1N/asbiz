@@ -64,6 +64,9 @@ def test_run_candidate_keeps_order_limits_concurrency_and_survives_failures():
     assert llm.bodies == [{"base": 1, "thinking": {"type": "enabled", "budget_tokens": 1024}}]
     assert [r.ok for r in rows[:5]] == [True, True, False, True, False]
     assert rows[2].failed and not rows[0].failed and rows[3].truncated
+    assert (rows[0].expected, rows[0].predicted, rows[0].answer) == ("платежи", "платежи", "платежи")
+    assert (rows[4].expected, rows[4].predicted) == ("платежи", "другое")
+    assert rows[2].expected == "тарифы" and rows[2].predicted is None
 
 
 def test_summarize_counts_failures_as_errors():
